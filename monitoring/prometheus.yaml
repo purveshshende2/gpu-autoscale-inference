@@ -1,0 +1,593 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+
+    scrape_configs:
+      - job_name: "redis-exporter"
+        static_configs:
+          - targets: ["redis:9121"]
+
+      - job_name: "dcgm-exporter"
+        static_configs:
+          - targets: ["dcgm-exporter:9400"]
+
+      - job_name: "vllm"
+        static_configs:
+          - targets: ["vllm:8000"]
+
+      - job_name: "kube-state-metrics"
+        static_configs:
+          - targets: ["kube-state-metrics.kube-system:8080"]
+
+      - job_name: "kubernetes-pods"
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: llm-gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.11.0
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.retention.time=1d"
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provisioning
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: default
+        orgId: 1
+        folder: ""
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+data:
+  llm-gateway.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "name": "Phases",
+            "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+            "enable": true,
+            "iconColor": "rgba(100, 150, 220, 0.15)",
+            "target": {
+              "type": "tags",
+              "matchAny": true,
+              "tags": ["phase"],
+              "limit": 100
+            }
+          },
+          {
+            "name": "Events",
+            "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+            "enable": true,
+            "iconColor": "red",
+            "target": {
+              "type": "tags",
+              "matchAny": true,
+              "tags": ["event"],
+              "limit": 100
+            }
+          }
+        ]
+      },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "title": "",
+          "type": "text",
+          "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+          "transparent": true,
+          "options": {
+            "mode": "html",
+            "content": "<div style=\"font-family:Inter,sans-serif;color:#dcdce0;padding:4px 14px;\"><div style=\"font-size:12px;font-weight:600;letter-spacing:1px;color:#9aa0a6;margin-bottom:6px;\">ANNOTATION LEGENDS</div><div style=\"display:flex;flex-wrap:nowrap;gap:20px;align-items:center;font-size:12px;\"><span><span style=\"display:inline-block;width:24px;height:12px;background:rgba(100,150,220,0.25);border:1px solid rgba(120,170,230,0.6);vertical-align:middle;margin-right:6px;\"></span>Phase 1 &mdash; Cold Start</span><span><span style=\"display:inline-block;width:24px;height:12px;background:rgba(100,150,220,0.25);border:1px solid rgba(120,170,230,0.6);vertical-align:middle;margin-right:6px;\"></span>Phase 2 &mdash; Warm Continuous</span><span style=\"color:#555;\">|</span><span><span style=\"display:inline-block;width:0;height:14px;border-left:2px dashed #dc3c3c;vertical-align:middle;margin-right:8px;\"></span>Initial: no GPU node</span><span><span style=\"display:inline-block;width:0;height:14px;border-left:2px dashed #dc3c3c;vertical-align:middle;margin-right:8px;\"></span>&#9888; Spot preempt &mdash; KEDA+CA self-heal</span><span><span style=\"display:inline-block;width:0;height:14px;border-left:2px dashed #dc3c3c;vertical-align:middle;margin-right:8px;\"></span>GPU scaled to zero</span></div></div>"
+          }
+        },
+        {
+          "title": "[vLLM HTTP] Inference Request Rate - POST /v1/completions",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 0, "y": 17 },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{job=\"vllm\",handler=\"/v1/completions\",status=\"2xx\"}[1m]))",
+              "legendFormat": "POST /v1/completions (2xx) - req/s",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 20 },
+              "unit": "reqps"
+            }
+          }
+        },
+        {
+          "title": "[Redis] Job Queue Depth vs KEDA Scale-Up Threshold",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 0, "y": 3 },
+          "targets": [
+            {
+              "expr": "redis_key_size{key=\"inference_queue\"}",
+              "legendFormat": "inference_queue backlog",
+              "refId": "A"
+            },
+            {
+              "expr": "vector(5)",
+              "legendFormat": "KEDA scale-up threshold",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 20 },
+              "unit": "short"
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "KEDA scale-up threshold" },
+                "properties": [
+                  { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+                  { "id": "custom.fillOpacity", "value": 0 },
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "title": "[HPA/KEDA] Autoscaler Trigger - Observed Metric vs Target",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 6, "y": 3 },
+          "targets": [
+            {
+              "expr": "kube_horizontalpodautoscaler_status_target_metric{horizontalpodautoscaler=\"keda-hpa-vllm-autoscaler\",metric_name=\"s0-redis-inference_queue\"}",
+              "legendFormat": "observed - vllm HPA (redis queue)",
+              "refId": "A"
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_status_target_metric{horizontalpodautoscaler=\"keda-hpa-worker-autoscaler\",metric_name=\"s0-redis-inference_queue\"}",
+              "legendFormat": "observed - worker HPA (redis queue)",
+              "refId": "B"
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_spec_target_metric{horizontalpodautoscaler=\"keda-hpa-vllm-autoscaler\",metric_name=\"s0-redis-inference_queue\"}",
+              "legendFormat": "target - KEDA threshold",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "short"
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "target - KEDA threshold" },
+                "properties": [
+                  { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+                  { "id": "custom.fillOpacity", "value": 0 },
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "title": "[kube-state-metrics] KEDA-Managed Pod Replicas",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 12, "y": 3 },
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas{deployment=\"vllm\"}",
+              "legendFormat": "vllm replicas (GPU)",
+              "refId": "A"
+            },
+            {
+              "expr": "kube_deployment_status_replicas{deployment=\"worker\"}",
+              "legendFormat": "worker replicas (CPU)",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "short",
+              "decimals": 0
+            }
+          }
+        },
+        {
+          "title": "[kube-state-metrics] Cluster Nodes - Total vs GPU (Cluster Autoscaler)",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 18, "y": 3 },
+          "targets": [
+            {
+              "expr": "count(kube_node_info)",
+              "legendFormat": "total nodes",
+              "refId": "A"
+            },
+            {
+              "expr": "count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0)",
+              "legendFormat": "GPU nodes (nvidia.com/gpu)",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "short",
+              "decimals": 0
+            }
+          }
+        },
+        {
+          "title": "[DCGM] GPU SM Utilization",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 0, "y": 10 },
+          "targets": [
+            {
+              "expr": "DCGM_FI_DEV_GPU_UTIL",
+              "legendFormat": "SM util - gpu {{gpu}} ({{modelName}})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "percent",
+              "max": 100,
+              "min": 0
+            }
+          }
+        },
+        {
+          "title": "[DCGM] GPU Power Draw",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 6, "y": 10 },
+          "targets": [
+            {
+              "expr": "DCGM_FI_DEV_POWER_USAGE",
+              "legendFormat": "power - gpu {{gpu}} ({{modelName}})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "watt"
+            }
+          }
+        },
+        {
+          "title": "[DCGM] GPU HBM Memory Footprint",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 12, "y": 10 },
+          "targets": [
+            {
+              "expr": "DCGM_FI_DEV_FB_USED",
+              "legendFormat": "FB used - gpu {{gpu}} ({{modelName}})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "decmbytes"
+            }
+          }
+        },
+        {
+          "title": "[DCGM] GPU Temperature",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 18, "y": 10 },
+          "targets": [
+            {
+              "expr": "DCGM_FI_DEV_GPU_TEMP",
+              "legendFormat": "temp - gpu {{gpu}} ({{modelName}})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "celsius"
+            }
+          }
+        },
+        {
+          "title": "[vLLM] Prompt Tokens/sec - Ingress Throughput",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 6, "y": 17 },
+          "targets": [
+            {
+              "expr": "sum(rate(vllm:prompt_tokens_total[1m])) by (model_name)",
+              "legendFormat": "prompt tok/s - {{model_name}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "short"
+            }
+          }
+        },
+        {
+          "title": "[vLLM] Generation Tokens/sec - Egress Throughput",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 12, "y": 17 },
+          "targets": [
+            {
+              "expr": "sum(rate(vllm:generation_tokens_total[1m])) by (model_name)",
+              "legendFormat": "generation tok/s - {{model_name}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "short"
+            }
+          }
+        },
+        {
+          "title": "[vLLM] Time-to-First-Token (p95) - Cold Start Signal",
+          "type": "timeseries",
+          "gridPos": { "h": 7, "w": 6, "x": 18, "y": 17 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[5m])))",
+              "legendFormat": "p95 TTFT",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 },
+              "unit": "s"
+            }
+          }
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["llm", "inference", "gpu"],
+      "templating": { "list": [] },
+      "time": { "from": "now-30m", "to": "now" },
+      "title": "LLM Gateway",
+      "uid": "llm-gateway"
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:12.4.2
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "admin"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Viewer"
+            - name: GF_RENDERING_SERVER_URL
+              value: "http://localhost:8081/render"
+            - name: GF_RENDERING_CALLBACK_URL
+              value: "http://localhost:3000/"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provisioning
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+        - name: renderer
+          image: grafana/grafana-image-renderer:v5.7.3
+          ports:
+            - containerPort: 8081
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provisioning
+          configMap:
+            name: grafana-dashboard-provisioning
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      app: dcgm-exporter
+  template:
+    metadata:
+      labels:
+        app: dcgm-exporter
+    spec:
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      nodeSelector:
+        cloud.google.com/gke-accelerator: "nvidia-tesla-t4"
+      containers:
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.1-ubuntu22.04
+          ports:
+            - containerPort: 9400
+              name: metrics
+          securityContext:
+            privileged: true
+          env:
+            - name: LD_LIBRARY_PATH
+              value: /usr/local/nvidia/lib64
+          volumeMounts:
+            - name: device-plugins
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: nvidia-install-dir-host
+              mountPath: /usr/local/nvidia
+      volumes:
+        - name: device-plugins
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        - name: nvidia-install-dir-host
+          hostPath:
+            path: /home/kubernetes/bin/nvidia
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dcgm-exporter
+spec:
+  selector:
+    app: dcgm-exporter
+  ports:
+    - port: 9400
+      targetPort: 9400
+      name: metrics
+  type: ClusterIP

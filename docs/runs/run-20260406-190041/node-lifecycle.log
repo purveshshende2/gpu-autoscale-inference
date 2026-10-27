@@ -1,0 +1,4 @@
+TIME                   REASON             MESSAGE
+2026-04-06T12:01:20Z   TriggeredScaleUp   Pod triggered scale-up: [gpu-pool 0->1 (max: 1)]
+2026-04-06T12:36:30Z   ScaleDown          deleting pod for node scale down
+2026-04-06T12:37:54Z   ScaleDown          node removed (unneeded for 10m)

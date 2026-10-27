@@ -1,0 +1,15 @@
+TIME                   TYPE     REASON             OBJECT   MESSAGE
+2026-04-06T12:01:19Z   Normal    KEDAScaleTargetActivated   <none>   Scaled apps/v1.Deployment llm-gateway/vllm from 0 to 1, triggered by s0-redis-inference_queue
+2026-04-06T12:01:19Z   Normal    KEDAScaleTargetActivated   <none>   Scaled apps/v1.Deployment llm-gateway/worker from 0 to 1, triggered by s0-redis-inference_queue
+2026-04-06T12:01:20Z   Normal    TriggeredScaleUp           <none>   Pod triggered scale-up: [gpu-pool 0->1 (max: 1)]
+2026-04-06T12:03:14Z   Normal    Scheduled                  <none>   Successfully assigned llm-gateway/vllm-... to gke-gpu-pool-node
+2026-04-06T12:03:25Z   Normal    Pulling                    <none>   Pulling image "vllm/vllm-openai:v0.19.0"
+2026-04-06T12:03:33Z   Normal    Pulled                     <none>   Successfully pulled image "vllm/vllm-openai:v0.19.0" in 7.62s
+2026-04-06T12:05:22Z   Normal    Scheduled                  <none>   Successfully assigned llm-gateway/vllm-... to gke-gpu-pool-node
+2026-04-06T12:08:14Z   Normal    Pulled                     <none>   Successfully pulled image "vllm/vllm-openai:v0.19.0" in 7.02s
+2026-04-06T12:10:36Z   Normal    Pulling                    <none>   Successfully pulled image "vllm/vllm-openai:v0.19.0" (cached on node)
+2026-04-06T12:26:19Z   Normal    KEDAScaleTargetDeactivated   <none>   Deactivated apps/v1.Deployment llm-gateway/vllm from 1 to 0
+2026-04-06T12:26:19Z   Normal    KEDAScaleTargetDeactivated   <none>   Deactivated apps/v1.Deployment llm-gateway/worker from 2 to 0
+2026-04-06T12:26:49Z   Normal    KEDAScaleTargetDeactivated   <none>   Deactivated apps/v1.Deployment llm-gateway/worker from 1 to 0
+2026-04-06T12:36:30Z   Normal    ScaleDown                  <none>   deleting pod for node scale down
+2026-04-06T12:37:54Z   Normal    NodeDeleted                <none>   Node gke-gpu-pool-node deleted

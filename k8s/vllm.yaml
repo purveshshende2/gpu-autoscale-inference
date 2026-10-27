@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.19.0
+          args:
+            - "--model"
+            - "$(MODEL_ID)"
+            - "--max-model-len"
+            - "4096"
+            - "--gpu-memory-utilization"
+            - "0.8"
+            - "--enforce-eager"
+          env:
+            - name: MODEL_ID
+              value: "Qwen/Qwen2.5-1.5B-Instruct"
+            - name: HF_HOME
+              value: /root/.cache/huggingface
+          volumeMounts:
+            - name: model-weights
+              mountPath: /root/.cache/huggingface
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 60
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+      volumes:
+        - name: model-weights
+          persistentVolumeClaim:
+            claimName: vllm-model-weights
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+spec:
+  selector:
+    app: vllm
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
